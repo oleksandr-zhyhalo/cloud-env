@@ -39,15 +39,26 @@ jobs:
       run: |
         docker build -t ${{ github.repository }}:${{ github.event.inputs.branch }} .
         docker tag ${{ github.repository }}:${{ github.event.inputs.branch }} ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${{ github.event.inputs.branch }}
+        
+    - name: Snyk Docker Image Scan
+      uses: snyk/actions/docker@master
+      with:
+        args: --severity-threshold=high
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+  
+    - name: Run Unit Tests
+      run: |
+        docker run --rm simple-flask-app pytest
 
     - name: Push Docker image to ECR
       run: |
         docker push ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${{ github.event.inputs.branch }}
 
-        - name: Deploy to ECS
-        env:
-          TASK_DEFINITION: ${{ secrets[github.event.inputs.environment == 'stage' && 'STAGE_TASK_DEFINITION' || 'PROD_TASK_DEFINITION'] }}
-        run: |
+    - name: Deploy to ECS
+      env:
+        TASK_DEFINITION: ${{ secrets[github.event.inputs.environment == 'stage' && 'STAGE_TASK_DEFINITION' || 'PROD_TASK_DEFINITION'] }}
+      run: |
           echo "${TASK_DEFINITION}" > ecs-task-definition.json
           aws ecs update-service \
             --cluster ${{ github.event.inputs.environment }}-cluster \

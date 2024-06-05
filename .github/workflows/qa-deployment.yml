@@ -1,0 +1,126 @@
+name: Branch Deployment to Selected Env
+'on':
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Git branch to deploy
+        required: true
+        default: main
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          ref: '${{ github.event.inputs.branch }}'
+      - name: Generate unique tag
+        id: tag
+        run: 'echo "::set-output name=tag::qa-$(uuidgen | cut -d''-'' -f1)"'
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v1
+        with:
+          region: eu-west-1
+      - name: Build and tag Docker image
+        run: >
+          docker build -t ${{ github.repository }}:${{ steps.tag.outputs.tag }} .
+          docker tag ${{ github.repository }}:${{ github.event.inputs.branch }}
+          ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${{
+          steps.tag.outputs.tag }}
+      - name: Snyk Docker Image Scan
+        uses: snyk/actions/docker@master
+        with:
+          args: '--severity-threshold=high'
+        env:
+          SNYK_TOKEN: '${{ secrets.SNYK_TOKEN }}'
+      - name: Run Unit Tests
+        run: |
+          docker run --rm simple-flask-app pytest
+      - name: Push Docker image to ECR
+        run: >
+          docker push ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY
+          }}:${{ steps.tag.outputs.tag }}
+
+
+      - name: Deploy to ECS
+        env:
+            UNIQUE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+            ecs_task_definition=$(cat <<EOF
+            {
+              "family": "flask-app-qa",
+              "networkMode": "awsvpc",
+              "containerDefinitions": [
+                {
+                  "name": "simple-flask-app-container-${UNIQUE_TAG}",
+                  "image": "${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${UNIQUE_TAG}",
+                  "portMappings": [
+                    {
+                      "containerPort": 5000,
+                      "hostPort": 8080
+                    }
+                  ],
+                  "essential": true
+                }
+              ],
+              "requiresCompatibilities": [
+                "FARGATE"
+              ],
+              "cpu": "512",
+              "memory": "4096"
+            }
+            EOF
+            )
+
+            echo "$ecs_task_definition" > ecs-task-definition.json
+            aws ecs register-task-definition --cli-input-json file://ecs-task-definition.json
+
+            aws ecs create-service --cluster qa-cluster --service-name ${{ steps.tag.outputs.tag }}-service --task-definition my-app-qa --desired-count 1 --launch-type FARGATE --network-configuration "awsvpcConfiguration={subnets=[subnet-xxxxxxx],securityGroups=[sg-xxxxxxx],assignPublicIp=ENABLED}"
+      - name: Get task ARN
+        id: task-arn
+        run: >
+          SERVICE_ARN=$(aws ecs list-tasks --cluster qa-cluster --service-name
+          ${{ steps.tag.outputs.tag }}-service --query 'taskArns[0]' --output
+          text)
+
+          echo "::set-output name=task_arn::$SERVICE_ARN"
+      - name: Get ENI ID
+        id: eni-id
+        run: >
+          ENI_ID=$(aws ecs describe-tasks --cluster qa-cluster --tasks ${{
+          steps.task-arn.outputs.task_arn }} --query
+          'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value'
+          --output text)
+
+          echo "::set-output name=eni_id::$ENI_ID"
+      - name: Get public IP
+        id: public-ip
+        run: >
+          PUBLIC_IP=$(aws ec2 describe-network-interfaces
+          --network-interface-ids ${{ steps.eni-id.outputs.eni_id }} --query
+          'NetworkInterfaces[0].Association.PublicIp' --output text)
+
+          echo "::set-output name=public_ip::$PUBLIC_IP"
+      - name: Set up DNS
+        run: >
+          aws route53 change-resource-record-sets --hosted-zone-id
+          your-hosted-zone-id --change-batch '{
+            "Changes": [
+              {
+                "Action": "CREATE",
+                "ResourceRecordSet": {
+                  "Name": "'${{ steps.tag.outputs.tag }}.qa.yourdomain.com'",
+                  "Type": "A",
+                  "TTL": 300,
+                  "ResourceRecords": [
+                    {
+                      "Value": "'${{ steps.public-ip.outputs.public_ip }}'"
+                    }
+                  ]
+                }
+              }
+            ]
+          }'
