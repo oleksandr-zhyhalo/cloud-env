@@ -648,4 +648,5 @@ Configure WAF in front of ALB to catch all suspicious traffic or user activities
 ## CI/CD
 
 Evaluate CI/CD to combine it with AWS Code Deploy. 
+Add CI/CD job to purge deployment of dynamically provisioned resources based on unique tag id. 
 
