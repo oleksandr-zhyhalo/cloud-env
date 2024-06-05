@@ -1,0 +1,23 @@
+{
+    "name": "flask-web-app-stage",
+    "image": "<account-id>.dkr.ecr.eu-west-1.amazonaws.com/simple-flask-app:stage",
+    "cpu": "512",
+    "memory": "4096",
+    "essential": true,
+    "portMappings": [
+        {
+            "containerPort": 5000,
+            "hostPort": 8080,
+            "protocol": "tcp"
+        }
+    ],
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": 
+        {
+            "awslogs-group": "flask-web-app-log-group",
+            "awslogs-region": "eu-west-1",
+            "awslogs-stream-prefix": "flask-web-app-stage-container"
+        }
+    }
+}
